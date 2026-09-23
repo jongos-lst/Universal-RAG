@@ -1,6 +1,6 @@
 # Spec: Universal-RAG upgrade
 
-Status: scope approved by the user on 2026-09-23; implementation in progress.
+Status: scope approved by the user on 2026-09-23; implementation and local verification complete. See [validation evidence](validation.md).
 
 ## Objective
 
@@ -191,9 +191,20 @@ Run failure paths for interruption, concurrency, provider outage and invalid inp
 - Never: commit secrets, overwrite the existing knowledge index, fabricate test
   evidence, equate mocked integration with verified live behavior.
 
-## Decision needed
+## Accepted decisions and verification limits
 
-Approve this full scope with Wren OSS via local MCP (recommended), or identify an
-existing Wren Cloud/Classic deployment whose exact API/version must be targeted.
-Live quality evaluation also requires representative questions/corpus and
-configured providers; use synthetic data until those are available.
+The user approved the full scope with Wren OSS via local MCP. SQL execution is
+absent from the tool surface. The configured LLM generates proposals using Wren
+semantics; Wren transpiles them with `--no-connect`.
+
+The implementation prepares chunks and embeddings in memory, then publishes one
+bounded Redis transaction rather than writing a separate staging index. Existing
+LangChain orchestration was replaced with direct SDK calls to make identity and
+publication explicit. Jobs remain synchronous and source-level retries are bounded.
+
+Deterministic provider contracts, real Redis/MCP, Docker/UI runtime checks and
+published Wren native transpilation were verified. Live-model comparisons and
+production corpus quality/cost measurements remain explicitly unverified because
+no representative corpus or provider credentials were supplied. Synthetic scores
+are regression evidence, not evidence of model quality. Details and commands are
+in [validation](validation.md) and [operations](operations.md).
