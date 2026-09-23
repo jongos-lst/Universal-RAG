@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     rerank_failure: Literal["fail", "fallback"] = "fail"
     admin_token: SecretStr | None = None
     website_hosts: str = ""
+    wren_home: str | None = None
     wren_project: str | None = None
     wren_command: str = "wren"
     wren_timeout: float = Field(default=30, gt=0, le=120)

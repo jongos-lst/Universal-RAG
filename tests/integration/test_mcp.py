@@ -190,7 +190,10 @@ async def test_wren_timeout_closes_stdio_process(tmp_path):
     )
     wrapper.chmod(0o700)
     settings = SimpleNamespace(
-        wren_project=str(tmp_path), wren_command=str(wrapper), wren_timeout=2
+        wren_home=None,
+        wren_project=str(tmp_path),
+        wren_command=str(wrapper),
+        wren_timeout=2,
     )
     started = time.monotonic()
     with pytest.raises((TimeoutError, BaseExceptionGroup)):

@@ -101,6 +101,8 @@ async def propose_sql(question, settings, ai):
         for key in ("PATH", "HOME", "LANG", "SYSTEMROOT")
         if key in os.environ
     }
+    if settings.wren_home:
+        env["WREN_HOME"] = str(Path(settings.wren_home).resolve())
     server = StdioServerParameters(
         command=settings.wren_command,
         args=["serve", "mcp", "--project", str(project), "--no-connect", "--quiet"],
