@@ -1,19 +1,21 @@
-FROM python:3.11.6
-
-RUN python3 -m ensurepip
-RUN pip3 install --no-cache --upgrade pip setuptools 
-
-WORKDIR /app/
-ENV PYTHONPATH=/app
-
+FROM python:3.11.14-slim AS backend
+WORKDIR /app
+ENV PYTHONPATH=/app PYTHONUNBUFFERED=1 TIKTOKEN_CACHE_DIR=/opt/tiktoken
 COPY unibot_RAG/requirements.txt /app/requirements.txt
-RUN pip install -r requirements.txt
-
+RUN pip install --no-cache-dir -r requirements.txt && \
+    python -c 'import tiktoken; tiktoken.get_encoding("cl100k_base")'
 COPY unibot_RAG /app/unibot_RAG
-RUN chmod +x unibot_RAG/start-uvicorn.sh
-
-RUN addgroup docker && adduser --system appuser && adduser appuser docker && chown appuser:docker -R /app/* 
+RUN useradd --create-home appuser
 USER appuser
-WORKDIR /app/unibot_RAG
-# CMD ./start-uvicorn.sh
-ENTRYPOINT ["streamlit", "run", "streamlit_chatbot.py", "--server.port=8501", "--server.address=0.0.0.0"]
+EXPOSE 8000
+CMD ["python", "-m", "uvicorn", "unibot_RAG.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+FROM python:3.11.14-slim AS frontend
+WORKDIR /app
+COPY requirements-ui.txt /app/requirements-ui.txt
+RUN pip install --no-cache-dir -r requirements-ui.txt httpx==0.28.1
+COPY unibot_RAG/streamlit_chatbot.py /app/streamlit_chatbot.py
+RUN useradd --create-home appuser
+USER appuser
+EXPOSE 8501
+CMD ["python", "-m", "streamlit", "run", "streamlit_chatbot.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.maxUploadSize=5"]

@@ -1,131 +1,223 @@
+"""Redis Search storage with optimistic, atomic source revision publication."""
+
 import hashlib
-import logging
-import os
+import json
+import re
 
-import pandas as pd
-import tiktoken
-from unibot_RAG.utils.data_proc import process_df_for_vectorstore
-from langchain.embeddings.openai import OpenAIEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores.redis import Redis
+import numpy as np
+import redis
+from redis.commands.search.field import TagField, TextField, VectorField
+from redis.commands.search.index_definition import IndexDefinition, IndexType
+from redis.commands.search.query import Query
+from redis.exceptions import ResponseError, WatchError
+
+from unibot_RAG.config import Settings
+from unibot_RAG.domain import IngestionConflict, Passage
 
 
-schema = {
-    'text': [{'name': 'question', 'weight': 1, 'no_stem': False, 'withsuffixtrie': False, 'no_index': False, 'sortable': False},
-             {'name': 'answer', 'weight': 1, 'no_stem': False, 'withsuffixtrie': False, 'no_index': False, 'sortable': False}, 
-             {'name': 'uuid', 'weight': 1, 'no_stem': False, 'withsuffixtrie': False, 'no_index': False, 'sortable': False}, 
-             {'name': 'original_uuid', 'weight': 1, 'no_stem': False, 'withsuffixtrie': False, 'no_index': False, 'sortable': False},
-             ],
-     'vector': [{'name': 'content_vector', 'dims': 1536, 'algorithm': 'FLAT', 'datatype': 'FLOAT32', 'distance_metric': 'COSINE', 'initial_cap': 20000, 'block_size': 1000}], 'content_key':'answer'}
-
+def digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 class RedisClient:
-    def __init__(
-        self,
-        index_name: str,
-        create_index: bool = False,
-    ) -> None:
-        self.create_index = create_index
-        self.index_name = index_name
-        self.tokenizer = tiktoken.get_encoding("p50k_base")
-        self.logger = logging.getLogger(__name__)
-
-        self.tiktoken_len = lambda text: len(
-            self.tokenizer.encode(text, disallowed_special=())
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.index = settings.redis_index_name
+        self.prefix = self.index + ":"
+        self.redis = redis.Redis.from_url(
+            settings.redis_url.get_secret_value(),
+            password=settings.redis_password.get_secret_value()
+            if settings.redis_password
+            else None,
+            socket_timeout=settings.request_timeout,
+            socket_connect_timeout=5,
         )
 
-        self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=400,
-            chunk_overlap=20,
-            length_function=self.tiktoken_len,
-            separators=["\n\n", "\n", " ", ""],
-        )
-
-        model_name = "openai/text-embedding-3-small"
-        self.embedding = OpenAIEmbeddings(
-            model=model_name,
-            openai_api_base="https://openrouter.ai/api/v1",
-            openai_api_key=os.getenv("OPENAI_API_KEY"),
-        )
-
-
-        if not create_index:
-            self.logger.info(f"Connecting to Redis index {self.index_name}")
-            self.vectorstore = Redis(
-                redis_url=os.getenv("REDIS_URL"),
-                index_name=index_name,
-                embedding=self.embedding,
-                index_schema=schema,
-                username=os.getenv("REDIS_USER"),
-                password=os.getenv("REDIS_PASSWORD"),
-            )
-            self.logger.info(
-                f"Connected to Redis index {self.index_name} on {os.getenv('REDIS_URL')}"
-            )
-        else:
-            self.logger.info(
-                f"Please create Redis index {self.index_name} after __init__ by calling `ingest_table` or `ingest_document`"
-            )
-
-        self.batch_size = 64
-
-    def ingest_table(self, df: pd.DataFrame):
-        """
-        Ingest a table of questions and answers into the index on pinecone.
-
-        The dataframe should be pre-processed through the function `proc_faq_df` in `utils.py.
-        """
-
-        assert "Context" in df.columns
-        assert "uuid" in df.columns
-
-        texts, metadatas = process_df_for_vectorstore(df, self.text_splitter)
-
-        self.logger.info(f"Ingesting {len(df)} rows into Redis index {self.index_name}")
-        self.vectorstore = Redis.from_texts(
-            texts=texts,
-            metadatas=metadatas,
-            embedding=self.embedding,
-            index_name=self.index_name,
-            index_schema=schema,
-            username=os.getenv("REDIS_USER"),
-            password=os.getenv("REDIS_PASSWORD"),
-        )
-        self.logger.info(f"Ingested {len(df)} rows into Redis index {self.index_name}")
-
-    def ingest_document(self, text: str):
-        texts = self.text_splitter.split_text(text)
-        n = len(texts)
-        metadatas = [
+    def ensure_index(self):
+        signature = json.dumps(
             {
-                "index": i,
-                "text": texts[i],
-            }
-            for i in range(n)
+                "schema": 2,
+                "dimensions": self.settings.embedding_dimensions,
+                "model": self.settings.embedding_model,
+                "provider": self.settings.openai_base_url,
+            },
+            sort_keys=True,
+        ).encode()
+        key = self.prefix + "schema"
+        try:
+            self.redis.ft(self.index).info()
+        except ResponseError as exc:
+            if (
+                "unknown index" not in str(exc).lower()
+                and "no such index" not in str(exc).lower()
+            ):
+                raise
+            try:
+                self.redis.ft(self.index).create_index(
+                    [
+                        TextField("text"),
+                        TextField("enrichment"),
+                        TagField("source"),
+                        TagField("active"),
+                        VectorField(
+                            "vector",
+                            "HNSW",
+                            {
+                                "TYPE": "FLOAT32",
+                                "DIM": self.settings.embedding_dimensions,
+                                "DISTANCE_METRIC": "COSINE",
+                            },
+                        ),
+                    ],
+                    definition=IndexDefinition(
+                        prefix=[self.prefix + "chunk:"], index_type=IndexType.HASH
+                    ),
+                )
+            except ResponseError as race:
+                if "index already exists" not in str(race).lower():
+                    raise
+            self.redis.set(key, signature, nx=True)
+        if self.redis.get(key) != signature:
+            raise ValueError(
+                "Index schema or embedding configuration differs; use a new versioned index"
+            )
+
+    def manifest(self, source_id: str) -> bytes | None:
+        return self.redis.get(self.prefix + "source:" + digest(source_id))
+
+    def is_current(self, source_id: str, revision: str) -> bool:
+        manifest = self.manifest(source_id)
+        return bool(manifest and json.loads(manifest)["revision"] == revision)
+
+    def publish(
+        self,
+        source_id: str,
+        revision: str,
+        chunks: list[Passage],
+        vectors: list,
+        *,
+        expected: bytes | None,
+    ):
+        array = np.asarray(vectors, dtype=np.float32)
+        if (
+            not chunks
+            or len(chunks) > self.settings.max_chunks
+            or array.shape != (len(chunks), self.settings.embedding_dimensions)
+            or not np.isfinite(array).all()
+            or np.any(np.linalg.norm(array, axis=1) == 0)
+            or any(c.source_id != source_id for c in chunks)
+        ):
+            raise ValueError("Invalid chunk/vector batch")
+        manifest_key = self.prefix + "source:" + digest(source_id)
+        keys = [
+            self.prefix + "chunk:" + digest(source_id) + ":" + revision + ":" + c.id
+            for c in chunks
         ]
-        
-        ids = [hashlib.md5(text.encode()).hexdigest() for text in texts]
+        if len(set(keys)) != len(keys):
+            raise ValueError("Duplicate chunk identity")
+        try:
+            with self.redis.pipeline() as pipe:
+                pipe.watch(manifest_key)
+                if pipe.get(manifest_key) != expected:
+                    raise IngestionConflict("Source changed; retry ingestion")
+                previous = json.loads(expected)["keys"] if expected else []
+                pipe.multi()
+                for key in previous:
+                    pipe.hset(key, "active", "0")
+                for key, chunk, vector in zip(keys, chunks, array):
+                    pipe.hset(
+                        key,
+                        mapping={
+                            "text": chunk.text,
+                            "source": digest(source_id),
+                            "source_id": source_id,
+                            "active": "1",
+                            "id": chunk.id,
+                            "metadata": json.dumps(chunk.metadata, ensure_ascii=False),
+                            "enrichment": chunk.metadata.get("enrichment", ""),
+                            "vector": vector.tobytes(),
+                        },
+                    )
+                pipe.set(manifest_key, json.dumps({"revision": revision, "keys": keys}))
+                pipe.incr(self.prefix + "epoch")
+                pipe.execute()
+        except WatchError as exc:
+            raise IngestionConflict("Source changed; retry ingestion") from exc
 
-        embeddings = self.embedding.embed_documents(texts, chunk_size=self.batch_size)
-
-        self.logger.info(f"Ingesting document into Redis index {self.index_name}")
-        self.vectorstore.add_texts(
-            texts=texts, metadatas=metadatas, embeddings=embeddings, ids=ids
+    def search(
+        self,
+        vector: list,
+        question: str,
+        k: int,
+        source_id: str | None = None,
+        *,
+        include_lexical=True,
+    ):
+        values = np.asarray(vector, dtype=np.float32)
+        if (
+            values.shape != (self.settings.embedding_dimensions,)
+            or not np.isfinite(values).all()
+            or not np.linalg.norm(values)
+        ):
+            raise ValueError("Invalid query embedding")
+        if not 1 <= k <= 100:
+            raise ValueError("Invalid candidate count")
+        filters = "@active:{1}" + (
+            f" @source:{{{digest(source_id)}}}" if source_id is not None else ""
         )
-        self.logger.info(f"Ingested document into Redis index {self.index_name}")
+        # Keep only literal word tokens. User input cannot inject Redis query operators.
+        terms = re.findall(r"[^\W_]+", question, flags=re.UNICODE)[:64]
+        lexical_expr = "|".join(terms)
+        fields = ("id", "text", "source_id", "metadata")
+        for _ in range(3):
+            epoch = self.redis.get(self.prefix + "epoch")
+            dense = self.redis.ft(self.index).search(
+                Query(f"({filters})=>[KNN {k} @vector $vec AS distance]")
+                .sort_by("distance")
+                .return_fields(*fields)
+                .paging(0, k)
+                .dialect(2),
+                {"vec": values.tobytes()},
+            )
+            lexical = (
+                self.redis.ft(self.index).search(
+                    Query(f"({filters}) @text|enrichment:({lexical_expr})")
+                    .scorer("BM25")
+                    .return_fields(*fields)
+                    .paging(0, k)
+                    .dialect(2)
+                )
+                if terms and include_lexical
+                else None
+            )
+            if epoch == self.redis.get(self.prefix + "epoch"):
 
-    def reset(self):
-        self.vectorstore.drop_index(self.index_name, delete_documents=True)
-        self.logger.info(f"Dropped Redis index {self.index_name}")
+                def convert(result):
+                    return (
+                        [
+                            Passage(
+                                id=d.id,
+                                text=d.text,
+                                source_id=d.source_id,
+                                metadata=json.loads(d.metadata),
+                            )
+                            for d in result.docs
+                        ]
+                        if result
+                        else []
+                    )
 
-    @property
-    def info(self) -> str:
-        raise NotImplementedError
+                return convert(dense), convert(lexical)
+        raise IngestionConflict("Knowledge changed during search; retry")
 
-    @classmethod
-    def from_os_env(cls, create_index: bool = False):
-        return cls(
-            index_name=os.getenv("REDIS_INDEX_NAME"),
-            create_index=create_index,
+    def save_job(self, report: dict):
+        self.redis.set(
+            self.prefix + "job:" + report["job_id"], json.dumps(report), ex=604800
         )
+
+    def get_job(self, job_id: str):
+        raw = self.redis.get(self.prefix + "job:" + job_id)
+        return json.loads(raw) if raw else None
+
+    def close(self):
+        self.redis.close()
