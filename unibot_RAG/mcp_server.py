@@ -2,6 +2,9 @@
 
 from contextlib import asynccontextmanager
 from typing import Annotated
+from threading import Lock
+
+import anyio
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
@@ -10,38 +13,45 @@ from unibot_RAG.service import RAGService
 
 def create_server(service=None):
     holder = {"service": service}
+    service_lock = Lock()
 
     def get_service():
-        if holder["service"] is None:
-            holder["service"] = RAGService()
-        return holder["service"]
+        with service_lock:
+            if holder["service"] is None:
+                holder["service"] = RAGService()
+            return holder["service"]
 
     @asynccontextmanager
     async def lifespan(server):
         yield {}
         if service is None and holder["service"] is not None:
-            holder["service"].close()
+            await anyio.to_thread.run_sync(holder["service"].close)
 
     mcp = FastMCP("Universal RAG", lifespan=lifespan)
 
     @mcp.tool()
-    def search_knowledge(
+    async def search_knowledge(
         question: Annotated[str, Field(min_length=1, max_length=4000)],
         source_id: Annotated[str | None, Field(max_length=1024)] = None,
     ) -> dict:
         """Retrieve cited knowledge passages without generating an answer."""
         try:
-            return {"sources": get_service().search(question, source_id)}
+            sources = await anyio.to_thread.run_sync(
+                lambda: get_service().search(question, source_id), abandon_on_cancel=True
+            )
+            return {"sources": sources}
         except Exception:
             raise RuntimeError("Knowledge retrieval unavailable") from None
 
     @mcp.tool()
-    def answer_question(
+    async def answer_question(
         question: Annotated[str, Field(min_length=1, max_length=4000)],
     ) -> dict:
         """Answer using retrieved evidence, or explicitly abstain."""
         try:
-            return get_service().answer(question)
+            return await anyio.to_thread.run_sync(
+                lambda: get_service().answer(question), abandon_on_cancel=True
+            )
         except Exception:
             raise RuntimeError("Answer service unavailable") from None
 
@@ -53,8 +63,9 @@ def create_server(service=None):
         from unibot_RAG.integrations.wren import propose_sql as wren_propose
 
         try:
-            svc = get_service()
-            return await wren_propose(question, svc.settings, svc.ai)
+            svc = await anyio.to_thread.run_sync(get_service, abandon_on_cancel=True)
+            ai = await anyio.to_thread.run_sync(lambda: svc.ai, abandon_on_cancel=True)
+            return await wren_propose(question, svc.settings, ai)
         except Exception:
             raise RuntimeError("SQL proposal unavailable") from None
 

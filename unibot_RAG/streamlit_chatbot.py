@@ -75,6 +75,7 @@ question = st.text_area(
     "Your question", max_chars=4000, placeholder="What is the return policy?"
 )
 if st.button("Ask", type="primary", disabled=not question.strip()):
+    st.session_state.pop("last_result", None)
     path = (
         "/v1/sql/propose"
         if mode == "SQL proposal"

@@ -81,7 +81,9 @@ Explicit ingestion commands (run at repository root):
 
 Website fetching requires `WEBSITE_HOSTS` (comma-separated exact hostnames), HTTPS,
 public IP resolution and no redirects. Connections pin the checked IP with TLS
-hostname verification. GCS uses `GCS_BUCKET_NAME`, optional `GCS_PREFIX`, and normal
+hostname verification. Response media types select the loader: plain text retains
+literal placeholders such as `<token>`, while HTML/XHTML is cleaned as markup.
+GCS uses `GCS_BUCKET_NAME`, optional `GCS_PREFIX`, and normal
 Application Default Credentials; credentials are never bundled into images.
 
 ## Retrieval and chunking
@@ -102,7 +104,12 @@ Application Default Credentials; credentials are never bundled into images.
 
 Redis 7.4 Stack supplies BM25 and HNSW; fusion runs in Python, so `FT.HYBRID` and
 Redis 8.4 are not required. Model, provider and embedding dimensions are recorded
-with the index. A mismatch is rejected: choose a new name ending in `_v2` and
+with the index. `EMBEDDING_DIMENSIONS` is sent to known `text-embedding-3-*`
+models. Set `EMBEDDING_SEND_DIMENSIONS=true` for a custom model/deployment that
+supports the optional API parameter, or `false` for an endpoint that does not.
+Other model names omit it by default; their native output must still match the
+configured index dimensions. Legacy `text-embedding-ada-002` requires 1536.
+A mismatch is rejected: choose a new name ending in `_v2` and
 reingest explicitly. Vector and BM25 scores are rank signals, not confidence.
 
 ## MCP and WrenAI

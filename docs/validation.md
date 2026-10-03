@@ -35,6 +35,43 @@ The first Wren Linux ARM slim-image installation failed because the native engin
 has no matching wheel and compilation lacked a linker. The supported macOS ARM
 wheel worked. Wren remains separately installed; see [setup](wren-mcp.md).
 
+## PR review fixes — 2026-10-03
+
+Local Python 3.12 verification: `python -m pytest -q` passed **180 tests** with
+**9 Redis integration tests skipped**. Ruff, `python -m pip check`, compileall,
+`tests/ui_smoke.py`, and `git diff --check` passed. One upstream Starlette/AnyIO
+deprecation warning remains. The cloud proxy required an environment-only `socksio`
+installation; application dependency pins were unchanged.
+
+The follow-up patch addresses first-initialization schema metadata races, embedding
+request dimensions, Wren datasource-aware SQL validation, website media/deadline
+handling, blocking MCP tools, and stale results after a failed UI question.
+
+- Deterministic two-thread tests reproduce the Redis creator/loser interleaving;
+  only the successful `FT.CREATE` process may publish the embedding signature.
+  An additional real-Redis test checks concurrent initializers against the physical
+  vector dimensions in `FT.INFO`.
+- Provider tests inspect serialized SDK HTTP requests for shortened vectors,
+  legacy `ada-002`, and custom endpoint parameter opt-in/opt-out.
+- SQL tests cover MySQL/BigQuery quoting, MSSQL `TOP`, datasource aliases, and
+  write/multi-statement rejection. These use the pinned SQLGlot parser and a
+  controlled Wren MCP session; no live SQL/model/database was used for this patch.
+- Website regressions exercise the real loaders through API, CLI and legacy
+  helpers, plus real urllib3 buffering over socket pairs with trickling body and
+  header data. DNS, worker saturation and blocked cleanup have deadline tests.
+- Actual FastMCP dispatch tests check execution threads, concurrent progress and
+  both asyncio and AnyIO cancellation. A cancelled synchronous provider call may
+  finish in its worker under the provider's own timeout; cancellation does not
+  force-kill Python threads.
+- The Streamlit test reuses a successful query session before simulating a new
+  failed question, checking that neither old SQL nor an old answer remains.
+
+This cloud workspace has no Docker or Redis Search daemon. Local Redis tests are
+explicitly skipped, and remote CI must verify them on the exact pushed commit.
+The earlier image builds and native Wren smoke test above describe the original
+upgrade, not reruns against this follow-up patch. Live provider quality, GCS,
+production data and deployment remain outside this validation.
+
 ## Retrieval evaluation
 
 The six-question synthetic corpus runs through real Redis ingestion and search.

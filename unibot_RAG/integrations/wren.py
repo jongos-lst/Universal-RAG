@@ -51,11 +51,11 @@ async def allowed_call(session, name, arguments, schemas=None):
     return read_result(await session.call_tool(name, arguments))
 
 
-def validate_sql_proposal(sql):
+def validate_sql_proposal(sql, *, dialect=None):
     if not isinstance(sql, str) or not sql.strip() or len(sql) > 20000:
         raise ValueError("Invalid SQL proposal")
     try:
-        statements = parse(sql)
+        statements = parse(sql, read=dialect)
     except ParseError as exc:
         raise ValueError("SQL proposal could not be parsed") from exc
     if len(statements) != 1 or not isinstance(statements[0], exp.Query):
@@ -77,7 +77,24 @@ async def propose_with_session(question, session, ai):
     sql = await anyio.to_thread.run_sync(
         lambda: ai.propose_sql(question, {"mdl": mdl, "instructions": instructions})
     )
-    sql = validate_sql_proposal(sql)
+    # get_mdl exposes the project's target datasource. Match Wren 0.15's
+    # SQLGlot aliases instead of interpreting every proposal as generic SQL.
+    datasource = mdl.get("dataSource") if isinstance(mdl, dict) else None
+    if datasource is not None and not isinstance(datasource, str):
+        raise ValueError("Invalid Wren datasource")
+    datasource = datasource.lower() if datasource else None
+    dialect = {
+        "mssql": "tsql",
+        "canner": "trino",
+        "local_file": "duckdb",
+        "s3_file": "duckdb",
+        "minio_file": "duckdb",
+        "gcs_file": "duckdb",
+        # Wren's DataFusion parser extends the generic parser only with
+        # date arithmetic functions; generic parsing suffices for this gate.
+        "datafusion": None,
+    }.get(datasource, datasource)
+    sql = validate_sql_proposal(sql, dialect=dialect)
     plan = await allowed_call(session, "dry_plan", {"sql": sql}, schemas)
     return {
         "status": "proposed",

@@ -49,18 +49,15 @@ def failed(self, method, path, **kwargs):
 
 
 with patch.object(httpx.Client, "request", failed):
-    app = AppTest.from_file(
-        os.getenv(
-            "UI_APP_PATH",
-            str(
-                Path(__file__).resolve().parents[1] / "unibot_RAG/streamlit_chatbot.py"
-            ),
-        )
-    ).run()
-    app.text_area[0].input("Question?").run()
+    # Reuse the app after a successful SQL query; a new failure must not
+    # present stale SQL or a stale answer as the current response.
+    app.text_area[0].input("A different question?").run()
     next(b for b in app.button if b.label == "Ask").click().run()
     assert not app.exception and "unavailable" in app.error[0].value
     assert "private" not in app.error[0].value
+    assert not app.code
+    assert "last_result" not in app.session_state
+    assert not any("Returns accepted" in m.value for m in app.markdown)
 print(
     "UI runtime: initial state, document answer/citation, SQL proposal and safe failure passed"
 )

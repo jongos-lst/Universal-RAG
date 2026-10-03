@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     chat_model: str = "gpt-4.1-mini"
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = Field(default=1536, ge=2, le=8192)
+    # None preserves compatibility: known text-embedding-3 models send the
+    # optional API parameter; custom endpoints opt in only when supported.
+    embedding_send_dimensions: bool | None = None
     embedding_batch_size: int = Field(default=32, ge=1, le=128)
     request_timeout: float = Field(default=30, gt=0, le=120)
     chunk_strategy: Literal["token", "recursive", "structure", "semantic"] = "structure"
@@ -49,6 +52,8 @@ class Settings(BaseSettings):
             raise ValueError("chunk_overlap must be smaller than chunk_tokens")
         if self.top_k > self.candidate_k:
             raise ValueError("top_k must not exceed candidate_k")
+        if self.embedding_model == "text-embedding-ada-002" and self.embedding_dimensions != 1536:
+            raise ValueError("text-embedding-ada-002 requires 1536 embedding dimensions")
         return self
 
     def ingestion_fingerprint(self) -> dict:
@@ -59,6 +64,7 @@ class Settings(BaseSettings):
             "semantic_threshold",
             "embedding_model",
             "embedding_dimensions",
+            "embedding_send_dimensions",
             "openai_base_url",
             "enrichment_enabled",
             "enrichment_failure",

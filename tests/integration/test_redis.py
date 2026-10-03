@@ -153,3 +153,36 @@ def test_dense_mode_skips_lexical_results(store):
     store.publish("s", "r1", [passage()], [[1, 0, 0]], expected=None)
     dense, lexical = store.search([1, 0, 0], "SKU123", 5, include_lexical=False)
     assert len(dense) == 1 and lexical == []
+
+
+def test_concurrent_initializers_keep_physical_and_recorded_dimensions_aligned(store):
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    store.redis.ft(store.index).dropindex(delete_documents=True)
+    store.redis.delete(store.prefix + "schema")
+    barrier = Barrier(8)
+
+    def initialize(dimensions):
+        client = RedisClient(store.settings.model_copy(update={"embedding_dimensions": dimensions}))
+        try:
+            barrier.wait(timeout=5)
+            try:
+                client.ensure_index()
+                return dimensions, True
+            except ValueError:
+                return dimensions, False
+        finally:
+            client.close()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        outcomes = list(pool.map(initialize, [3, 5] * 4))
+    signature = json.loads(store.redis.get(store.prefix + "schema"))
+    winner = signature["dimensions"]
+    assert winner in {3, 5}
+    assert outcomes.count((winner, True)) == 4
+    assert outcomes.count((8 - winner, False)) == 4
+    attributes = store.redis.ft(store.index).info()["attributes"]
+    vector = next(dict(zip(a[::2], a[1::2])) for a in attributes if b"vector" in a)
+    assert int(vector[b"dim"]) == winner

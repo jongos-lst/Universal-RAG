@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+import time
 
 import numpy as np
 import redis
@@ -76,8 +77,18 @@ class RedisClient:
             except ResponseError as race:
                 if "index already exists" not in str(race).lower():
                     raise
-            self.redis.set(key, signature, nx=True)
-        if self.redis.get(key) != signature:
+            else:
+                # Only the FT.CREATE winner owns the model/provider identity.
+                # A losing creator must never label another process's index.
+                self.redis.set(key, signature, nx=True)
+        deadline = time.monotonic() + self.settings.request_timeout
+        stored = self.redis.get(key)
+        while stored is None and time.monotonic() < deadline:
+            # FT.CREATE and metadata publication are separate commands. Readers
+            # may briefly see the new index before its creator publishes metadata.
+            time.sleep(min(0.01, max(0, deadline - time.monotonic())))
+            stored = self.redis.get(key)
+        if stored != signature:
             raise ValueError(
                 "Index schema or embedding configuration differs; use a new versioned index"
             )

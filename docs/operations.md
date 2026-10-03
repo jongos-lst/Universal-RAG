@@ -34,6 +34,13 @@ rejected when no text is extractable. Parsers run in-process; hostile complex
 PDFs may still use disproportionate CPU/memory. Only trusted administrators may
 ingest; isolate parser workers before accepting anonymous/untrusted public uploads.
 
+Website fetches enforce `REQUEST_TIMEOUT` across worker admission, DNS, connection,
+response headers/body and cleanup. A timeout shuts down captured transport sockets
+without waiting for a buffered reader's close lock. OS DNS resolution cannot be
+force-cancelled safely, so it may finish in the background; cancelled fetches do not
+connect after DNS returns. Each process caps outstanding website workers at eight,
+including stalled DNS/cleanup, and admission waits share the same deadline.
+
 Provider calls have configured HTTP timeouts and bounded retries. Job logs contain
 IDs, counts, durations and error types, not question/document text or credentials.
 The liveness endpoint checks the process, not provider health. A successful health

@@ -35,10 +35,16 @@ class AIProvider:
 
     def embed(self, texts):
         vectors = []
+        send_dimensions = self.settings.embedding_send_dimensions
+        if send_dimensions is None:
+            send_dimensions = self.settings.embedding_model.startswith("text-embedding-3-")
+        options = {"dimensions": self.settings.embedding_dimensions} if send_dimensions else {}
         for start in range(0, len(texts), self.settings.embedding_batch_size):
             batch = texts[start : start + self.settings.embedding_batch_size]
             response = self.client.embeddings.create(
-                model=self.settings.embedding_model, input=batch
+                model=self.settings.embedding_model,
+                input=batch,
+                **options,
             )
             data = sorted(response.data, key=lambda item: item.index)
             if [d.index for d in data] != list(range(len(batch))):

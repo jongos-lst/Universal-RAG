@@ -117,11 +117,11 @@ def create_app(service=None, admin_token=None):
     def website(request: URLRequest):
         from unibot_RAG.ingestion.sources import fetch_website
 
-        return call(
-            lambda: get_service().ingest_bytes(
-                "website.html", fetch_website(request.url, settings), request.url
-            )
-        )
+        def ingest_website():
+            page = fetch_website(request.url, settings)
+            return get_service().ingest_bytes(page.filename, page.content, request.url)
+
+        return call(ingest_website)
 
     @app.get("/v1/admin/jobs/{job_id}", dependencies=[Depends(require_admin)])
     def job(job_id: str):

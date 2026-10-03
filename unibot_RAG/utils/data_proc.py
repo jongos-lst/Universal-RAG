@@ -1,7 +1,7 @@
 """Compatibility helpers; all new ingestion uses canonical document loaders."""
 
 from unibot_RAG.config import Settings
-from unibot_RAG.ingestion.loaders import html_text
+from unibot_RAG.ingestion.loaders import load_documents
 from unibot_RAG.ingestion.sources import fetch_website
 
 DF_SCHEMA = ["Question", "Answer", "Context", "uuid"]
@@ -37,4 +37,8 @@ def process_df_for_vectorstore(df, text_splitter):
 
 
 def extract_website_content(url):
-    return html_text(fetch_website(url, Settings()).decode("utf-8"))
+    settings = Settings()
+    page = fetch_website(url, settings)
+    return "\n\n".join(
+        doc.text for doc in load_documents(page.filename, page.content, url, settings)
+    )

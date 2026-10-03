@@ -171,12 +171,12 @@ def test_website_connects_to_validated_ip_with_original_tls_and_host(monkeypatch
         chunks=(b"Hello ", b"world"), media="text/html; charset=utf-8"
     )
     pool, created, queries = mock_website(monkeypatch, response)
-    assert (
-        fetch_website(
-            "https://example.com/policy?lang=zh", Settings(website_hosts="example.com")
-        )
-        == b"Hello world"
+    page = fetch_website(
+        "https://example.com/policy?lang=zh", Settings(website_hosts="example.com")
     )
+    assert page.content == b"Hello world"
+    assert page.media_type == "text/html"
+    assert page.filename == "website.html"
     assert queries == [("example.com", 443)]
     assert created[0][0] == ("93.184.216.34",)
     assert created[0][1]["server_hostname"] == "example.com"
@@ -212,11 +212,22 @@ def test_website_oversized_stream_aborts_and_closes(monkeypatch):
 
 
 def test_website_total_deadline_is_enforced_during_stream(monkeypatch):
+    import time
+
     response = WebsiteResponse()
     pool, _, _ = mock_website(monkeypatch, response)
-    times = iter([10.0, 12.0])
+    now = time.monotonic
+    expired = False
+
+    def stream(*args, **kwargs):
+        nonlocal expired
+        expired = True
+        yield b"Late response"
+
+    monkeypatch.setattr(response, "stream", stream)
     monkeypatch.setattr(
-        "unibot_RAG.ingestion.sources.time.monotonic", lambda: next(times)
+        "unibot_RAG.ingestion.sources.time.monotonic",
+        lambda: now() + (2 if expired else 0),
     )
     with pytest.raises(ValueError, match="byte/time limit"):
         fetch_website(

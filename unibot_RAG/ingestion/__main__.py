@@ -35,9 +35,10 @@ def main():
                         args.source_id or args.file.resolve().as_uri(),
                     )
                 elif args.url:
+                    page = fetch_website(args.url, service.settings)
                     result = service.ingest_bytes(
-                        "website.html",
-                        fetch_website(args.url, service.settings),
+                        page.filename,
+                        page.content,
                         args.source_id or args.url,
                     )
                 else:
