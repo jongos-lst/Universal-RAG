@@ -1,71 +1,147 @@
-# Unibot RAG Chatbot
+# Universal RAG
 
-This project, "Unibot RAG", is a Universal Retrieval Augmented Generation (RAG) chatbot designed to provide answers based on a defined knowledge base. It leverages a modern tech stack to deliver an interactive and intelligent conversational agent.
+FastAPI + Streamlit knowledge assistant with Redis lexical/vector retrieval,
+reciprocal-rank fusion, optional reranking, cited answers and explicit abstention.
+Ingestion accepts TXT, Markdown, HTML, CSV, JSON/JSONL, text PDF and DOCX. WrenAI
+integration generates and transpiles SQL proposals through local MCP; it never
+executes them.
 
-## Key Technologies and Architecture:
+## Run locally with Docker
 
-*   **Frontend:** Built with **Streamlit**, providing an interactive web-based chat interface (`streamlit_chatbot.py`).
-*   **Backend API:** Developed using **FastAPI**, serving as the primary API for interactions (`api/main.py`).
-*   **RAG Orchestration:** Utilizes **Langchain** for managing the RAG pipeline, including document retrieval and response generation (`api/unibot_langchain.py`).
-*   **Large Language Model (LLM) & Embeddings:** Integrates with **OpenAI** (specifically `gpt-3.5-turbo` for LLM and `openai/text-embedding-3-small` for embeddings).
-*   **Vector Store:** Employs **Redis** as a high-performance vector database to store and retrieve embedded knowledge base documents (`redis/redis_client.py`).
-*   **Data Ingestion:** Data is ingested into Redis from **Google Cloud Storage** during application startup or via a dedicated API endpoint.
-*   **Containerization:** The entire application is containerized using **Docker** and orchestrated with **Docker Compose** for easy setup and deployment.
+Requires Docker Compose 2.24+ and an OpenAI-compatible provider for embeddings and
+answers. Python containers use 3.11; local development is tested on 3.12 as well.
 
-The system is designed to provide precise answers from its knowledge base, explicitly stating when it lacks sufficient information to prevent hallucination, as defined in its prompt engineering.
-
-## Building and Running
-
-This project can be built and run using Docker Compose for local development.
-
-### Prerequisites
-
-*   Docker and Docker Compose installed.
-*   An OpenAI API key.
-
-### Setup Environment Variables
-
-Create or update the `.env` file in the project root with your OpenAI API key and other configurations:
-
-```dotenv
-OPENAI_API_KEY=
-REDIS_URL=redis://redis:6379
-REDIS_INDEX_NAME=unibot_test
-REDIS_PASSWORD=
-PROJECT_NAME=unibot_RAG
-API_PATH=/unibot_RAG_API
+```sh
+cp .env.example .env
+# Set OPENAI_API_KEY and a nonempty ADMIN_TOKEN in .env.
+docker compose up --build
 ```
 
-### Starting the Services
+Open [the UI](http://localhost:8501) or [API docs](http://localhost:8000/docs).
+Health and documentation work without provider credentials. Redis is internal to
+Compose; API/UI bind to loopback. The example Redis password is for local use.
+Set your own runtime password before sharing an environment. The API has no
+multi-tenant read authorization; keep it local or place it behind your own
+identity/authorization boundary before exposing private knowledge.
 
-To start the Redis and FastAPI backend services using Docker Compose:
+This version uses a **new `unibot_v2` index and `redis_v2_data` volume**. Existing
+knowledge is not changed or migrated. See [upgrade and rollback](docs/operations.md).
 
-```bash
-docker-compose up --build
+## Ingest and query
+
+Use the sidebar to upload a document with a stable source ID and admin token.
+Reusing a source ID replaces its visible revision only after the complete new
+source has been processed successfully. Repeating identical input skips embedding
+and returns `unchanged`. Different source IDs are independent documents.
+
+The API supports:
+
+| Method / path | Purpose |
+| --- | --- |
+| `GET /unibot/health_check` | Process liveness, no external work |
+| `POST /unibot/v1/users/get-unibot-response/` | `{ "question": "..." }`, optional legacy `phone_number` |
+| `POST /v1/search` | `{ "question": "...", "source_id": "optional" }` |
+| `PUT /unibot/admin/ingest-data` | UTF-8 JSON `{ "filename": "x.txt", "content": "...", "source_id": "x" }` |
+| `POST /v1/admin/upload` | Multipart `file` and `source_id` |
+| `POST /v1/admin/website` | `{ "url": "https://allowed-host/path" }` |
+| `GET /v1/admin/jobs/{job_id}` | Persisted ingestion report |
+| `POST /v1/sql/propose` | Wren SQL proposal, no execution |
+
+Admin routes require `Authorization: Bearer <ADMIN_TOKEN>`. Empty tokens disable
+admin access. Query errors use 422 for invalid input/contract, 409 for concurrent
+knowledge changes, and 503 for unavailable dependencies. Successful answers include
+`status`, `answer`, `sources`, `metadata`, and `source_document`. There is no fake
+feedback persistence or shared conversation memory.
+
+## Development
+
+```sh
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -r unibot_RAG/requirements.txt -r requirements-dev.txt -r requirements-lint.txt
+.venv/bin/python -c 'import tiktoken; tiktoken.get_encoding("cl100k_base")'
+.venv/bin/python -m uvicorn unibot_RAG.api.main:app --host 127.0.0.1 --port 8000
 ```
 
-This will:
-1.  Build the `redis` service using `redis.dockerfile`.
-2.  Build the `backend` service using `backend.dockerfile`.
-3.  Start both services. The FastAPI backend will be accessible on port 80.
+Install `requirements-ui.txt` separately to run Streamlit locally:
 
-### Running the Streamlit Frontend
-
-The Streamlit chatbot runs separately and connects directly to the Redis vector store. To run it:
-
-```bash
-streamlit run streamlit_chatbot.py
+```sh
+.venv/bin/python -m pip install -r requirements-ui.txt
+.venv/bin/python -m streamlit run unibot_RAG/streamlit_chatbot.py
+# Optional UI regression check:
+.venv/bin/python tests/ui_smoke.py
 ```
 
-You can then access the Streamlit application in your web browser, typically at `http://localhost:8501`.
+Explicit ingestion commands (run at repository root):
 
-## Development Conventions
+```sh
+.venv/bin/python -m unibot_RAG.ingestion --file ./handbook.md --source-id handbook --attempts 3
+.venv/bin/python -m unibot_RAG.ingestion --url https://example.com/guide
+.venv/bin/python -m unibot_RAG.ingestion --gcs
+```
 
-*   **Language:** Python 3.9+
-*   **Dependency Management:** `requirements.txt`
-*   **Backend Framework:** FastAPI
-*   **Frontend Framework:** Streamlit
-*   **RAG Framework:** Langchain
-*   **Vector Database:** Redis
-*   **Code Style:** Follows standard Python best practices and potentially `black` (listed in `requirements.txt`).
-*   **Prompt Engineering:** Strict system prompt is used to enforce context-only answers and prevent hallucination.
+Website fetching requires `WEBSITE_HOSTS` (comma-separated exact hostnames), HTTPS,
+public IP resolution and no redirects. Connections pin the checked IP with TLS
+hostname verification. Response media types select the loader: plain text retains
+literal placeholders such as `<token>`, while HTML/XHTML is cleaned as markup.
+GCS uses `GCS_BUCKET_NAME`, optional `GCS_PREFIX`, and normal
+Application Default Credentials; credentials are never bundled into images.
+
+## Retrieval and chunking
+
+- `CHUNK_STRATEGY=token|recursive|structure|semantic`; default `structure` preserves
+  Markdown/HTML heading boundaries and CSV/JSON record provenance.
+- `CHUNK_TOKENS=400`, `CHUNK_OVERLAP=40`: limits measured with `cl100k_base`, with
+  Unicode-safe boundaries. Overlap applies to token windows; recursive/structure
+  boundaries keep complete units when they fit. Semantic mode uses extra embedding calls and its
+  `SEMANTIC_THRESHOLD` is experimental.
+- `RETRIEVAL_MODE=hybrid|dense`, `CANDIDATE_K=20`, `TOP_K=5`.
+- `RERANK_URL` enables a Cohere v2-compatible cross-encoder endpoint, with optional
+  `RERANK_API_KEY` and configurable `RERANK_MODEL`. `RERANK_FAILURE=fail|fallback`
+  controls outages; fallback emits a content-free warning.
+- `ENRICHMENT_ENABLED=true` adds AI titles/summaries/keywords to lexical metadata,
+  with a 32-chunk/source call budget. Original passages remain citation evidence.
+  `ENRICHMENT_FAILURE=fail|skip` makes partial enrichment explicit in job warnings.
+
+Redis 7.4 Stack supplies BM25 and HNSW; fusion runs in Python, so `FT.HYBRID` and
+Redis 8.4 are not required. Model, provider and embedding dimensions are recorded
+with the index. `EMBEDDING_DIMENSIONS` is sent to known `text-embedding-3-*`
+models. Set `EMBEDDING_SEND_DIMENSIONS=true` for a custom model/deployment that
+supports the optional API parameter, or `false` for an endpoint that does not.
+Other model names omit it by default; their native output must still match the
+configured index dimensions. Legacy `text-embedding-ada-002` requires 1536.
+A mismatch is rejected: choose a new name ending in `_v2` and
+reingest explicitly. Vector and BM25 scores are rank signals, not confidence.
+
+## MCP and WrenAI
+
+Run the local RAG server with:
+
+```sh
+.venv/bin/python -m unibot_RAG.mcp_server
+```
+
+It exposes `search_knowledge`, `answer_question`, and `propose_sql` over stdio.
+No ingestion or SQL execution tools are exposed. See [Wren setup](docs/wren-mcp.md)
+for its separately installed runtime and semantic project.
+
+## Verification
+
+```sh
+.venv/bin/python -m pip check
+.venv/bin/ruff check unibot_RAG tests
+.venv/bin/python -m pytest tests/unit tests/api tests/integration/test_mcp.py -q
+```
+
+Real Redis tests require a disposable Redis Search instance, never a production
+endpoint. The suite creates unique test indexes and removes only those indexes.
+
+```sh
+docker run --rm -p 127.0.0.1:16389:6379 redis/redis-stack-server:7.4.0-v8
+TEST_REDIS_URL=redis://localhost:16389 .venv/bin/python -m pytest -q
+TEST_REDIS_URL=redis://localhost:16389 .venv/bin/python -m unibot_RAG.evaluation
+```
+
+Without `TEST_REDIS_URL`, only Redis tests are explicitly skipped. MCP tests spawn
+real protocol sessions against a synthetic Wren server. They are not proof of
+live model quality or production database correctness. See [validation notes](docs/validation.md)
+and the [original audit](docs/component-audit.md).

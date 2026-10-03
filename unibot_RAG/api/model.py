@@ -1,68 +1,36 @@
 from typing import Literal
-
-import openai
-from pydantic import BaseModel
-
-# fmt: off
-from openai import (
-    APIError,
-    OpenAIError,
-    ConflictError,
-    NotFoundError,
-    APIStatusError,
-    RateLimitError,
-    APITimeoutError,
-    BadRequestError,
-    APIConnectionError,
-    AuthenticationError,
-    InternalServerError,
-    PermissionDeniedError,
-    UnprocessableEntityError,
-    APIResponseValidationError,
-)
-# fmt: on
+from pydantic import BaseModel, Field, field_validator
 
 
 class unibotRequest(BaseModel):
-    question: str
-    phone_number: str
+    question: str = Field(min_length=1, max_length=4000)
+    phone_number: str | None = None
 
-OpenAIErrors = [
-    APIError,
-    OpenAIError,
-    ConflictError,
-    NotFoundError,
-    APIStatusError,
-    RateLimitError,
-    APITimeoutError,
-    BadRequestError,
-    APIConnectionError,
-    AuthenticationError,
-    InternalServerError,
-    PermissionDeniedError,
-    UnprocessableEntityError,
-    APIResponseValidationError,
-]
-
-OpenAIErrors = {error: error.__name__ for error in OpenAIErrors}
-
-unibotResponseStatusType = Literal[
-    "response_before_unibot",
-    *map(lambda x: f"unibot_{x}", OpenAIErrors.values()),
-    "unibot_unknown_error",
-    "unibot_no_knowledge",
-    "unibot_success",
-]
+    @field_validator("question")
+    @classmethod
+    def question_not_blank(cls, value):
+        if not value.strip():
+            raise ValueError("Question cannot be blank")
+        return value
 
 
-unibotLogStatusType = tuple[
-    unibotResponseStatusType,
-]
+class SearchRequest(unibotRequest):
+    source_id: str | None = Field(default=None, min_length=1, max_length=1024)
 
-unibotResponseStatusType = Literal["success", "no_knowledge", "busy_or_error"]
+
+class IngestRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+    source_id: str = Field(min_length=1, max_length=1024)
+    content: str = Field(min_length=1, max_length=5_000_000)
+
+
+class URLRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
 
 
 class unibotResponse(BaseModel):
-    status: unibotResponseStatusType = "busy_or_error"
-    answer: str = "Sorry, unibot doesn't have knowledge."
-    id: str = ""
+    status: Literal["success", "no_knowledge", "busy_or_error"]
+    answer: str
+    sources: list[dict] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
+    source_document: str = ""

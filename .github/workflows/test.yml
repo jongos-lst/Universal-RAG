@@ -1,0 +1,48 @@
+name: Test RAG
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.12']
+    services:
+      redis:
+        image: redis/redis-stack-server:7.4.0-v8@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: python -m pip install -r unibot_RAG/requirements.txt -r requirements-dev.txt -r requirements-lint.txt
+      - run: python -m pip check
+      - run: python -c 'import tiktoken; tiktoken.get_encoding("cl100k_base")'
+      - run: ruff check unibot_RAG tests
+      - run: python -m pytest -q
+        env:
+          TEST_REDIS_URL: redis://localhost:6379
+      - run: python -m unibot_RAG.evaluation --output evaluation.json
+        env:
+          TEST_REDIS_URL: redis://localhost:6379
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-${{ matrix.python }}
+          path: evaluation.json
+
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements-ui.txt httpx==0.28.1
+      - run: python tests/ui_smoke.py

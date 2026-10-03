@@ -25,3 +25,7 @@ GEMINI.md
 
 # Credentials
 credentials.json/
+credentials.json
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
