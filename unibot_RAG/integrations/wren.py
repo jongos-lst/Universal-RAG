@@ -126,12 +126,21 @@ async def propose_sql(question, settings, ai):
         env=env,
         cwd=str(project),
     )
-    async with asyncio.timeout(settings.wren_timeout):
-        async with stdio_client(server) as (read, write):
-            async with ClientSession(
-                read,
-                write,
-                read_timeout_seconds=timedelta(seconds=settings.wren_timeout),
-            ) as session:
-                await session.initialize()
-                return await propose_with_session(question, session, ai)
+    try:
+        async with asyncio.timeout(settings.wren_timeout):
+            async with stdio_client(server) as (read, write):
+                async with ClientSession(
+                    read,
+                    write,
+                    read_timeout_seconds=timedelta(seconds=settings.wren_timeout),
+                ) as session:
+                    await session.initialize()
+                    return await propose_with_session(question, session, ai)
+    except ExceptionGroup as exc:
+        # MCP's nested task groups wrap validation failures during teardown.
+        # Normalize only when every leaf is a validation error. Transport or
+        # cleanup failures, including mixed groups, must remain unavailable.
+        _, unexpected = exc.split(ValueError)
+        if unexpected is None:
+            raise ValueError("Invalid Wren response or SQL proposal") from exc
+        raise

@@ -72,6 +72,44 @@ The earlier image builds and native Wren smoke test above describe the original
 upgrade, not reruns against this follow-up patch. Live provider quality, GCS,
 production data and deployment remain outside this validation.
 
+## Runtime QA fixes — 2026-10-03
+
+A later isolated runtime check installed disposable Redis Stack and the native
+Wren runtime, superseding the earlier local Redis/native-Wren verification limit.
+It reproduced and then verified two fixes:
+
+- MCP task-group teardown wraps SQL validation errors in nested exception groups.
+  The Wren adapter now normalizes groups only when every leaf is a `ValueError`,
+  restoring HTTP 422 for invalid/write SQL. Unexpected or mixed groups remain
+  intact and produce a safe dependency failure. SQL remains proposal-only;
+  invalid statements never reach `dry_plan` or an execution tool.
+- A new document or website ingestion attempt clears the previous sidebar report.
+  Failure no longer leaves an earlier completed job visible as the current result.
+  Regression checks cover authorization, validation, dependency and connection
+  failures, repeated attempts and successful recovery.
+
+Verification on Python 3.12 passed **197 tests with no skips**, including all nine
+real Redis integration tests, plus **59 live runtime checks**. The live stack used
+Redis 7.4.7 / RediSearch 2.10.20 and published Wren 0.15.0 / native engine 0.8.0.
+The checks exercised actual HTTP APIs, production MCP subprocesses, native Wren
+transpilation and HTTP-backed Streamlit AppTest flows. AppTest's file-widget input
+was supplied by a test double; uploads themselves used the real multipart API.
+Embeddings and generation came from a deterministic local HTTP fixture, not a
+paid model. All eight document formats, replacement/failed replacement, source
+filters, citations, abstention and ingestion reports were included.
+
+The new automated regressions failed on the prior code and passed after the fix.
+Ruff, pip check, compileall, the Streamlit smoke script, patch whitespace checks
+and synthetic retrieval evaluation passed. Independent review found no actionable
+issue. Existing upstream Starlette/AnyIO and native-Wren warnings remain.
+
+These are private, isolated test services, not a deployment or user-accessible
+preview. No real provider credentials, paid APIs, GCS access, production data,
+database query execution, migration, image rebuild or merge was involved. Native
+Wren transpilation can accept an unknown column; it does not prove SQL semantic
+correctness or real-model quality. Remote CI should be checked for the exact
+published revision.
+
 ## Retrieval evaluation
 
 The six-question synthetic corpus runs through real Redis ingestion and search.

@@ -105,3 +105,39 @@ def test_dialect_validation_retains_readonly_gate(dialect, sql):
 
     with pytest.raises(ValueError):
         validate_sql_proposal(sql, dialect=dialect)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("errors,expected", [
+    ([ValueError("invalid SQL")], ValueError),
+    ([ExceptionGroup("nested", [ValueError("invalid SQL")])], ValueError),
+    ([ValueError("invalid SQL"), ExceptionGroup("nested", [ValueError("invalid model")])], ValueError),
+    ([RuntimeError("transport failed")], ExceptionGroup),
+    ([ValueError("invalid SQL"), ExceptionGroup("nested", [RuntimeError("cleanup failed")])], ExceptionGroup),
+])
+async def test_only_pure_validation_groups_are_normalized(tmp_path, monkeypatch, errors, expected):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unibot_RAG.integrations import wren
+
+    (tmp_path / "target").mkdir()
+    (tmp_path / "target" / "mdl.json").write_text("{}")
+    failure = ExceptionGroup("private transport details", errors)
+
+    @asynccontextmanager
+    async def failed_transport(server):
+        raise failure
+        yield  # Keep the failure inside an async context manager.
+
+    monkeypatch.setattr(wren, "stdio_client", failed_transport)
+    settings = SimpleNamespace(
+        wren_project=str(tmp_path), wren_home=None,
+        wren_command="unused", wren_timeout=5,
+    )
+    with pytest.raises(expected) as caught:
+        await wren.propose_sql("Orders?", settings, None)
+    if expected is ExceptionGroup:
+        # Preserve every error and the original group for unexpected/mixed failures.
+        assert caught.value is failure
+    else:
+        assert "private transport details" not in str(caught.value)

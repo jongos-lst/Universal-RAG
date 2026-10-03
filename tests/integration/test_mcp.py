@@ -203,3 +203,44 @@ async def test_wren_timeout_closes_stdio_process(tmp_path):
     pid = int(pid_file.read_text())
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+
+@pytest.mark.parametrize("proposal", ["DELETE FROM orders", "SELECT FROM", ""])
+async def test_sql_api_returns_422_for_validation_inside_real_stdio_session(
+    tmp_path, monkeypatch, proposal
+):
+    from types import SimpleNamespace
+    import httpx
+    from unibot_RAG.api.main import create_app
+    from unibot_RAG.integrations import wren
+
+    (tmp_path / "target").mkdir()
+    (tmp_path / "target" / "mdl.json").write_text("{}")
+    wrapper = tmp_path / "fixture-wren"
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import sys, runpy\n"
+        f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+        "sys.argv = ['fixture', 'wren', 'valid']\n"
+        f"runpy.run_path({str(FIXTURE)!r}, run_name='__main__')\n"
+    )
+    wrapper.chmod(0o700)
+    monkeypatch.setenv("WREN_PROJECT", str(tmp_path))
+    monkeypatch.setenv("WREN_COMMAND", str(wrapper))
+    calls = []
+    allowed_call = wren.allowed_call
+
+    async def track_call(session, name, arguments, schemas=None):
+        calls.append(name)
+        return await allowed_call(session, name, arguments, schemas)
+
+    monkeypatch.setattr(wren, "allowed_call", track_call)
+    ai = SimpleNamespace(propose_sql=lambda question, context: proposal)
+    app = create_app(service=SimpleNamespace(ai=ai))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/v1/sql/propose", json={"question": "Order total?"})
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Input or provider response is invalid"}
+    assert calls == ["get_mdl", "get_instructions"]

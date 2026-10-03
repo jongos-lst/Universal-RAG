@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from streamlit.testing.v1 import AppTest
 from unittest.mock import patch
 import httpx
@@ -61,3 +62,56 @@ with patch.object(httpx.Client, "request", failed):
 print(
     "UI runtime: initial state, document answer/citation, SQL proposal and safe failure passed"
 )
+
+# AppTest does not expose a file-uploader control. Supply uploaded bytes at that
+# widget boundary while exercising the real sidebar handlers and HTTP failures.
+for action in ("Ingest document", "Ingest website"):
+    for failure in (403, 422, 503, "unavailable"):
+        current = {"failure": None}
+        report = {"status": "completed", "chunk_count": 3, "job_id": "previous-job"}
+
+        def ingest_response(self, method, path, **kwargs):
+            expected_path = "/v1/admin/upload" if action == "Ingest document" else "/v1/admin/website"
+            assert method == "POST" and path == expected_path
+            if current["failure"] == "unavailable":
+                raise httpx.ConnectError("private transport details")
+            return httpx.Response(
+                current["failure"] or 200,
+                json=report if current["failure"] is None else {"detail": "private details"},
+                request=httpx.Request(method, "http://test" + path),
+            )
+
+        uploaded = SimpleNamespace(name="guide.txt", getvalue=lambda: b"A guide.")
+        with patch("streamlit.file_uploader", return_value=uploaded), patch.object(
+            httpx.Client, "request", ingest_response
+        ):
+            ingestion_app = AppTest.from_file(
+                os.getenv("UI_APP_PATH", str(Path(__file__).resolve().parents[1] / "unibot_RAG/streamlit_chatbot.py"))
+            ).run()
+            for field in ingestion_app.text_input:
+                field.input({
+                    "Administrator token": "test-only-admin",
+                    "Source ID": "guide",
+                    "Website URL": "https://example.com/guide",
+                }[field.label])
+            ingestion_app.run()
+            next(b for b in ingestion_app.button if b.label == action).click().run()
+            assert not ingestion_app.exception
+            assert ingestion_app.session_state["ingestion_report"] == report
+            assert any("Status: completed" in m.value for m in ingestion_app.markdown)
+            assert ingestion_app.code[0].value == "previous-job"
+            current["failure"] = failure
+            next(b for b in ingestion_app.button if b.label == action).click().run()
+            assert not ingestion_app.exception
+            assert ingestion_app.error and "private" not in ingestion_app.error[0].value
+            assert "ingestion_report" not in ingestion_app.session_state
+            assert not ingestion_app.code
+            assert not any("Status: completed" in m.value for m in ingestion_app.markdown)
+            assert not any("Chunks: 3" in m.value for m in ingestion_app.markdown)
+            current["failure"] = None
+            report = {"status": "completed", "chunk_count": 1, "job_id": "new-job"}
+            next(b for b in ingestion_app.button if b.label == action).click().run()
+            assert not ingestion_app.exception and not ingestion_app.error
+            assert ingestion_app.session_state["ingestion_report"] == report
+            assert ingestion_app.code[0].value == "new-job"
+print("UI runtime: repeated document/website ingestion failures clear stale reports")

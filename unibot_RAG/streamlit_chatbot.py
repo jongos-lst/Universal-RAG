@@ -36,6 +36,7 @@ with st.sidebar:
     if st.button(
         "Ingest document", disabled=uploaded is None or not source_id or not admin_token
     ):
+        st.session_state.pop("ingestion_report", None)
         with st.spinner("Parsing, chunking and indexing…"):
             report = request(
                 "POST",
@@ -49,6 +50,7 @@ with st.sidebar:
     website = st.text_input("Website URL", placeholder="https://example.com/guide")
     st.caption("Website hosts must be allowed in the server configuration.")
     if st.button("Ingest website", disabled=not website or not admin_token):
+        st.session_state.pop("ingestion_report", None)
         with st.spinner("Fetching and indexing…"):
             report = request(
                 "POST",
